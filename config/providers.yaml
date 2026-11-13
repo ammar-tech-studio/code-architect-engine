@@ -1,0 +1,53 @@
+# Unified Free Cloud LLM Router Configuration
+# Note: GitHub Models (models.github.ai) was retired on July 30, 2026; replaced by Cerebras & Mistral.
+
+providers:
+  openrouter:
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    extra_headers:
+      HTTP-Referer: "https://github.com/ammar-tech-studio/code-architect-engine"
+      X-Title: "code-architect-engine"
+
+  groq:
+    base_url: "https://api.groq.com/openai/v1"
+    api_key_env: "GROQ_API_KEY"
+
+  gemini:
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    api_key_env: "GEMINI_API_KEY"
+
+  cerebras:
+    base_url: "https://api.cerebras.ai/v1"
+    api_key_env: "CEREBRAS_API_KEY"
+
+  mistral:
+    base_url: "https://api.mistral.ai/v1"
+    api_key_env: "MISTRAL_API_KEY"
+
+routes:
+  reasoning:
+    - { provider: "openrouter", model: "deepseek/deepseek-r1:free", timeout: 90 }
+    - { provider: "openrouter", model: "openrouter/free", timeout: 90 }
+    - { provider: "gemini", model: "gemini-3.8-flash", timeout: 75 }
+    - { provider: "groq", model: "llama-3.3-70b-versatile", timeout: 60 }
+    - { provider: "cerebras", model: "gpt-oss-120b", timeout: 60 }
+
+  coding:
+    - { provider: "groq", model: "qwen/qwen3-32b", timeout: 60 }
+    - { provider: "cerebras", model: "qwen-3.8-27b", timeout: 60 }
+    - { provider: "mistral", model: "codestral-latest", timeout: 60 }
+    - { provider: "gemini", model: "gemini-3.8-flash", timeout: 75 }
+    - { provider: "openrouter", model: "openrouter/free", timeout: 90 }
+
+  summarization:
+    - { provider: "gemini", model: "gemini-3.8-flash", timeout: 90 }
+    - { provider: "gemini", model: "gemini-2.5-flash", timeout: 90 }
+    - { provider: "groq", model: "llama-3.3-70b-versatile", timeout: 60 }
+    - { provider: "openrouter", model: "openrouter/free", timeout: 90 }
+
+  fast_json:
+    - { provider: "groq", model: "llama-3.1-8b-instant", timeout: 45 }
+    - { provider: "cerebras", model: "qwen-3.8-27b", timeout: 45 }
+    - { provider: "gemini", model: "gemini-3.5-flash-lite", timeout: 45 }
+    - { provider: "openrouter", model: "openrouter/free", timeout: 60 }

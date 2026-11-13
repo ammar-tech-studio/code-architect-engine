@@ -1,0 +1,36 @@
+{
+  "max_pending": 40,
+  "max_depth": 3,
+  "items": [
+    {
+      "slug": "python-async-taskgroup-patterns",
+      "topic": "Python 3.11+ asyncio.TaskGroup, structured concurrency, and cancellation error handling best practices",
+      "category": "python-architecture",
+      "priority": 1,
+      "depth": 0,
+      "attempts": 0,
+      "status": "pending",
+      "parent_slug": null
+    },
+    {
+      "slug": "fastapi-clean-architecture-repository",
+      "topic": "FastAPI clean architecture with async repository pattern, dependency injection, and Pydantic v2 validation",
+      "category": "backend-architecture",
+      "priority": 2,
+      "depth": 0,
+      "attempts": 0,
+      "status": "pending",
+      "parent_slug": null
+    },
+    {
+      "slug": "sqlite-fts5-hybrid-memory",
+      "topic": "SQLite FTS5 BM25 ranking, WAL mode tuning, and transactional upsert patterns in Python",
+      "category": "database-engineering",
+      "priority": 3,
+      "depth": 0,
+      "attempts": 0,
+      "status": "pending",
+      "parent_slug": null
+    }
+  ]
+}
