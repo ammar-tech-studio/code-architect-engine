@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -75,7 +76,39 @@ class _DashboardShellState extends State<DashboardShell> {
     super.initState();
     _ownerController = TextEditingController(text: _api.owner);
     _repoController = TextEditingController(text: _api.repo);
+    _loadSavedSettings();
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshAll());
+  }
+
+  File? _settingsFile() {
+    if (kIsWeb) return null;
+    final home = Platform.environment['USERPROFILE'] ??
+        Platform.environment['HOME'] ??
+        Directory.current.path;
+    return File('$home${Platform.pathSeparator}.cae_dashboard_settings.json');
+  }
+
+  void _loadSavedSettings() {
+    try {
+      final file = _settingsFile();
+      if (file == null || !file.existsSync()) return;
+      final data = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      final savedOwner = data['owner']?.toString().trim() ?? '';
+      final savedRepo = data['repo']?.toString().trim() ?? '';
+      final savedToken = data['token']?.toString().trim() ?? '';
+      if (savedOwner.isNotEmpty) {
+        _api.owner = savedOwner;
+        _ownerController.text = savedOwner;
+      }
+      if (savedRepo.isNotEmpty) {
+        _api.repo = savedRepo;
+        _repoController.text = savedRepo;
+      }
+      if (savedToken.isNotEmpty) {
+        _api.token = savedToken;
+        _tokenController.text = savedToken;
+      }
+    } catch (_) {}
   }
 
   @override
@@ -176,6 +209,62 @@ class _DashboardShellState extends State<DashboardShell> {
       setState(() => _repoEntries = entries);
     } catch (e) {
       _showSnack('تعذر فتح المجلد: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _openRunLogsDialog(WorkflowRunSummary run) async {
+    if (run.id <= 0) {
+      _showSnack('معرّف التشغيل غير متوفر.');
+      return;
+    }
+    setState(() => _loading = true);
+    try {
+      final logs = await _api.fetchRunFailureLogs(run.id);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('سجل الكنسول: ${run.name} (${run.conclusion})'),
+          content: Container(
+            width: 720,
+            height: 440,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF111318),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                logs,
+                textDirection: TextDirection.ltr,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  color: Color(0xFFE2E8F0),
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: logs));
+                _showSnack('تم نسخ سجل الكنسول.');
+              },
+              icon: const Icon(Icons.copy, size: 18),
+              label: const Text('نسخ السجل'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      _showSnack('تعذر جلب سجل الكنسول: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -314,12 +403,24 @@ class _DashboardShellState extends State<DashboardShell> {
   }
 
   void _saveSettings() {
+    final owner = _ownerController.text.trim();
+    final repo = _repoController.text.trim();
+    final token = _tokenController.text.trim();
     setState(() {
-      _api.owner = _ownerController.text.trim();
-      _api.repo = _repoController.text.trim();
-      _api.token = _tokenController.text.trim();
+      _api.owner = owner;
+      _api.repo = repo;
+      _api.token = token;
     });
-    _showSnack('تم حفظ الإعدادات للجلسة الحالية.');
+    try {
+      final file = _settingsFile();
+      if (file != null) {
+        file.writeAsStringSync(
+          jsonEncode({'owner': owner, 'repo': repo, 'token': token}),
+          flush: true,
+        );
+      }
+    } catch (_) {}
+    _showSnack('تم حفظ الإعدادات وتحديث البيانات.');
     _refreshAll();
   }
 
@@ -543,25 +644,130 @@ class _DashboardShellState extends State<DashboardShell> {
                       ),
                     ),
                   const SizedBox(height: 10),
-                  FilledButton.icon(
-                    onPressed: _loading ? null : _triggerLearn,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('تشغيل التعلم الآن'),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _loading ? null : _triggerLearn,
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('تشغيل التعلم الآن'),
+                      ),
+                      if (_runs.isNotEmpty)
+                        OutlinedButton.icon(
+                          onPressed: _loading ? null : () => _openRunLogsDialog(_runs.first),
+                          icon: const Icon(Icons.terminal),
+                          label: Text(
+                            _runs.first.conclusion == 'failure'
+                                ? 'عرض سبب الفشل (الكنسول)'
+                                : 'عرض سجل الكنسول',
+                          ),
+                        ),
+                    ],
                   ),
                 ],
                 ...activeRuns.map(
-                  (r) => ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.autorenew),
-                    title: Text('${r.name} (${r.status})'),
-                    subtitle: Text(
-                      r.currentStep != null
-                          ? 'الخطوة الحالية: ${r.currentStep}'
-                          : 'قيد التنفيذ على GitHub Actions • ${r.createdAt}',
-                    ),
+                  (r) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.autorenew),
+                        title: Text('${r.name} (${r.status})'),
+                        subtitle: Text(
+                          r.currentStep != null
+                              ? 'الخطوة الحالية: ${r.currentStep}'
+                              : 'قيد التنفيذ على GitHub Actions • ${r.createdAt}',
+                        ),
+                        trailing: OutlinedButton.icon(
+                          onPressed: _loading ? null : () => _openRunLogsDialog(r),
+                          icon: const Icon(Icons.terminal, size: 16),
+                          label: const Text('الكنسول'),
+                        ),
+                      ),
+                      if (r.steps.isNotEmpty)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.7),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: r.steps.map((step) {
+                              final isRunning = step.status == 'in_progress';
+                              final isDone = step.status == 'completed';
+                              final isFailed = step.conclusion == 'failure';
+                              final icon = isRunning
+                                  ? Icons.sync
+                                  : isFailed
+                                      ? Icons.cancel
+                                      : isDone
+                                          ? Icons.check_circle
+                                          : Icons.radio_button_unchecked;
+                              final color = isRunning
+                                  ? Colors.blue
+                                  : isFailed
+                                      ? Colors.red
+                                      : isDone
+                                          ? Colors.green
+                                          : Colors.grey;
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 2),
+                                child: Row(
+                                  children: [
+                                    Icon(icon, size: 15, color: color),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        step.name,
+                                        textDirection: TextDirection.ltr,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: isRunning ? FontWeight.bold : FontWeight.normal,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
+                if (activeRuns.isNotEmpty && nextPending.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'الموضوع الجاري معالجته غالباً: ${nextPending.first.slug} — ${nextPending.first.topic}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                if (activeRuns.isNotEmpty &&
+                    _runs.any((r) => r.status == 'completed')) ...[
+                  const SizedBox(height: 8),
+                  Builder(
+                    builder: (context) {
+                      final lastCompleted =
+                          _runs.firstWhere((r) => r.status == 'completed');
+                      return OutlinedButton.icon(
+                        onPressed: _loading
+                            ? null
+                            : () => _openRunLogsDialog(lastCompleted),
+                        icon: const Icon(Icons.terminal, size: 18),
+                        label: Text(
+                          'عرض سجل آخر تنفيذ (${lastCompleted.conclusion})',
+                        ),
+                      );
+                    },
+                  ),
+                ],
                 ...activeQueue.map(
                   (q) => ListTile(
                     dense: true,
@@ -772,6 +978,12 @@ class _DashboardShellState extends State<DashboardShell> {
               ),
               title: Text(r.name),
               subtitle: Text('${r.status} • ${r.conclusion} • ${r.createdAt}'),
+              trailing: IconButton(
+                tooltip: 'عرض سجل الكنسول',
+                icon: const Icon(Icons.terminal),
+                onPressed: _loading ? null : () => _openRunLogsDialog(r),
+              ),
+              onTap: _loading ? null : () => _openRunLogsDialog(r),
             ),
           ),
         ),

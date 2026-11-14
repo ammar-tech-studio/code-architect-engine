@@ -45,6 +45,18 @@ class QueueItem {
   }
 }
 
+class WorkflowStepStatus {
+  final String name;
+  final String status;
+  final String conclusion;
+
+  const WorkflowStepStatus({
+    required this.name,
+    required this.status,
+    required this.conclusion,
+  });
+}
+
 class WorkflowRunSummary {
   final int id;
   final String name;
@@ -53,6 +65,7 @@ class WorkflowRunSummary {
   final String createdAt;
   final String htmlUrl;
   final String? currentStep;
+  final List<WorkflowStepStatus> steps;
 
   const WorkflowRunSummary({
     required this.id,
@@ -62,9 +75,13 @@ class WorkflowRunSummary {
     required this.createdAt,
     required this.htmlUrl,
     this.currentStep,
+    this.steps = const [],
   });
 
-  WorkflowRunSummary copyWith({String? currentStep}) {
+  WorkflowRunSummary copyWith({
+    String? currentStep,
+    List<WorkflowStepStatus>? steps,
+  }) {
     return WorkflowRunSummary(
       id: id,
       name: name,
@@ -73,6 +90,7 @@ class WorkflowRunSummary {
       createdAt: createdAt,
       htmlUrl: htmlUrl,
       currentStep: currentStep ?? this.currentStep,
+      steps: steps ?? this.steps,
     );
   }
 }
@@ -187,7 +205,19 @@ class GitHubApiClient {
   }
 
   Future<String> _fetchFileText(String path) async {
+    if (token.trim().isEmpty) {
+      final rawUri = Uri.https('raw.githubusercontent.com', '/$owner/$repo/main/$path');
+      final rawResp = await _client.get(rawUri);
+      if (rawResp.statusCode == 200) {
+        return rawResp.body;
+      }
+    }
     final resp = await _client.get(_repoUri('contents/$path'), headers: _headers);
+    if (resp.statusCode == 403) {
+      throw Exception(
+        'تم تجاوز حد طلبات GitHub API (403). أدخل GitHub PAT في تبويب الإعدادات لرفع الحد إلى 5000 طلب/ساعة.',
+      );
+    }
     if (resp.statusCode != 200) {
       throw Exception('GitHub API ${resp.statusCode} while reading $path');
     }
@@ -286,31 +316,94 @@ class GitHubApiClient {
     }
   }
 
-  Future<String?> fetchActiveRunCurrentStep(int runId) async {
+  Future<({String? currentStep, List<WorkflowStepStatus> steps})> fetchActiveRunSteps(int runId) async {
     try {
       final resp = await _client.get(_repoUri('actions/runs/$runId/jobs'), headers: _headers);
-      if (resp.statusCode != 200) return null;
+      if (resp.statusCode != 200) return (currentStep: null, steps: const <WorkflowStepStatus>[]);
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
       final jobs = data['jobs'] as List<dynamic>? ?? [];
+      final allSteps = <WorkflowStepStatus>[];
+      String? activeName;
       for (final j in jobs) {
         final job = j as Map<String, dynamic>;
         final steps = job['steps'] as List<dynamic>? ?? [];
         for (final s in steps) {
           final step = s as Map<String, dynamic>;
-          if (step['status'] == 'in_progress') {
-            return step['name']?.toString();
+          final name = step['name']?.toString() ?? '';
+          final status = step['status']?.toString() ?? '';
+          final conclusion = step['conclusion']?.toString() ?? '';
+          allSteps.add(WorkflowStepStatus(name: name, status: status, conclusion: conclusion));
+          if (status == 'in_progress') {
+            activeName = name;
           }
         }
-        if (job['status'] == 'in_progress') {
-          return job['name']?.toString();
+        if (activeName == null && job['status'] == 'in_progress') {
+          activeName = job['name']?.toString();
         }
       }
-    } catch (_) {}
-    return null;
+      return (currentStep: activeName, steps: allSteps);
+    } catch (_) {
+      return (currentStep: null, steps: const <WorkflowStepStatus>[]);
+    }
+  }
+
+  Future<String> fetchRunFailureLogs(int runId) async {
+    final jobsResp = await _client.get(_repoUri('actions/runs/$runId/jobs'), headers: _headers);
+    if (jobsResp.statusCode != 200) {
+      throw Exception('تعذر جلب تفاصيل الوظائف (${jobsResp.statusCode}). تأكد من إدخال GitHub PAT في الإعدادات.');
+    }
+    final data = jsonDecode(jobsResp.body) as Map<String, dynamic>;
+    final jobs = data['jobs'] as List<dynamic>? ?? [];
+    if (jobs.isEmpty) {
+      return 'لا توجد تفاصيل وظائف مسجلة لهذا التشغيل.';
+    }
+
+    final buffer = StringBuffer();
+    for (final j in jobs) {
+      final job = j as Map<String, dynamic>;
+      final jobId = (job['id'] as num?)?.toInt();
+      final jobName = job['name']?.toString() ?? 'Job';
+      final jobConclusion = job['conclusion']?.toString() ?? job['status']?.toString() ?? '';
+
+      buffer.writeln('=== Job: $jobName [$jobConclusion] ===');
+      final steps = job['steps'] as List<dynamic>? ?? [];
+      for (final s in steps) {
+        final step = s as Map<String, dynamic>;
+        final conclusion = step['conclusion']?.toString() ?? step['status']?.toString() ?? '';
+        if (conclusion == 'failure' || conclusion == 'cancelled' || conclusion == 'timed_out') {
+          buffer.writeln('✖ Step failed: ${step['name']} ($conclusion)');
+        }
+      }
+
+      if (jobId != null) {
+        try {
+          final logResp = await _client.get(_repoUri('actions/jobs/$jobId/logs'), headers: _headers);
+          if (logResp.statusCode == 200 && logResp.body.isNotEmpty) {
+            final lines = logResp.body.split('\n');
+            final tail = lines.length > 100 ? lines.sublist(lines.length - 100) : lines;
+            buffer.writeln('\n--- آخر 100 سطر من الكنسول ---');
+            buffer.writeln(tail.join('\n'));
+          } else if (logResp.statusCode == 401 || logResp.statusCode == 403) {
+            buffer.writeln('\n[ملاحظة]: لقراءة نص سجل الكنسول الكامل من GitHub، يرجى إدخال GitHub PAT (بصلاحية repo + workflow) في تبويب الإعدادات.');
+          } else {
+            buffer.writeln('\n[ملاحظة]: تعذر تحميل سجل الكنسول (HTTP ${logResp.statusCode}).');
+          }
+        } catch (e) {
+          buffer.writeln('\n[خطأ أثناء جلب السجل]: $e');
+        }
+      }
+      buffer.writeln();
+    }
+    return buffer.toString().trim();
   }
 
   Future<List<WorkflowRunSummary>> fetchWorkflowRuns() async {
     final resp = await _client.get(_repoUri('actions/runs', {'per_page': '10'}), headers: _headers);
+    if (resp.statusCode == 403) {
+      throw Exception(
+        'تم تجاوز حد طلبات GitHub API (60 طلب/ساعة بدون توكن). أدخل GitHub PAT في تبويب الإعدادات.',
+      );
+    }
     if (resp.statusCode != 200) {
       throw Exception('GitHub API ${resp.statusCode} while reading workflow runs');
     }
@@ -329,11 +422,12 @@ class GitHubApiClient {
     }).toList();
 
     for (var i = 0; i < summaries.length; i++) {
-      if (summaries[i].status == 'in_progress' && summaries[i].id > 0) {
-        final step = await fetchActiveRunCurrentStep(summaries[i].id);
-        if (step != null) {
-          summaries[i] = summaries[i].copyWith(currentStep: step);
-        }
+      if (summaries[i].status != 'completed' && summaries[i].id > 0) {
+        final info = await fetchActiveRunSteps(summaries[i].id);
+        summaries[i] = summaries[i].copyWith(
+          currentStep: info.currentStep,
+          steps: info.steps,
+        );
       }
     }
     return summaries;
@@ -341,6 +435,11 @@ class GitHubApiClient {
 
   Future<List<PullRequestSummary>> fetchPullRequests() async {
     final resp = await _client.get(_repoUri('pulls', {'state': 'all', 'per_page': '10'}), headers: _headers);
+    if (resp.statusCode == 403) {
+      throw Exception(
+        'تم تجاوز حد طلبات GitHub API (60 طلب/ساعة بدون توكن). أدخل GitHub PAT في تبويب الإعدادات.',
+      );
+    }
     if (resp.statusCode != 200) {
       throw Exception('GitHub API ${resp.statusCode} while reading pull requests');
     }
