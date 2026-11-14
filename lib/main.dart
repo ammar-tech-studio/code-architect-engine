@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'services/github_api.dart';
@@ -50,6 +53,12 @@ class _DashboardShellState extends State<DashboardShell> {
   List<WorkflowRunSummary> _runs = [];
   List<PullRequestSummary> _prs = [];
   CloudTelemetry? _telemetry;
+  BrainStorageInfo _brainStorage = const BrainStorageInfo(brainDbBytes: 0, exists: false);
+  List<RepoEntry> _repoEntries = [];
+  String _browsePath = 'workspace_outputs';
+  bool _autoRefresh = false;
+  Timer? _autoRefreshTimer;
+  bool _downloadingBrain = false;
   String _searchQuery = '';
 
   final _titleController = TextEditingController();
@@ -71,6 +80,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     _titleController.dispose();
     _bodyController.dispose();
     _slugController.dispose();
@@ -94,6 +104,8 @@ class _DashboardShellState extends State<DashboardShell> {
         _api.fetchWorkflowRuns(),
         _api.fetchPullRequests(),
         _api.fetchTelemetry(),
+        _api.fetchBrainStorageInfo(),
+        _api.fetchDirectoryEntries(_browsePath),
       ]);
       if (!mounted) return;
       setState(() {
@@ -102,12 +114,109 @@ class _DashboardShellState extends State<DashboardShell> {
         _runs = results[2] as List<WorkflowRunSummary>;
         _prs = results[3] as List<PullRequestSummary>;
         _telemetry = results[4] as CloudTelemetry?;
+        _brainStorage = results[5] as BrainStorageInfo;
+        _repoEntries = results[6] as List<RepoEntry>;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _toggleAutoRefresh(bool enabled) {
+    _autoRefreshTimer?.cancel();
+    setState(() => _autoRefresh = enabled);
+    if (enabled) {
+      _autoRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (!_loading && mounted) {
+          _refreshAll();
+        }
+      });
+    }
+  }
+
+  Future<void> _downloadBrainDb() async {
+    if (!_brainStorage.exists) {
+      _showSnack('ملف brain.db غير موجود بعد في السحابة. شغّل دورة التعلم أولاً.');
+      return;
+    }
+    if (kIsWeb) {
+      _showSnack('التنزيل المباشر للملفات مدعوم على نسخة سطح المكتب (Windows).');
+      return;
+    }
+    setState(() => _downloadingBrain = true);
+    try {
+      final bytes = await _api.downloadFileBytes(
+        'memory/brain.db',
+        directUrl: _brainStorage.downloadUrl,
+      );
+      final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? Directory.current.path;
+      final downloadsDir = Directory('$home${Platform.pathSeparator}Downloads');
+      final targetDir = downloadsDir.existsSync() ? downloadsDir : Directory.current;
+      final outFile = File('${targetDir.path}${Platform.pathSeparator}brain.db');
+      await outFile.writeAsBytes(bytes, flush: true);
+      _showSnack('تم تنزيل الذاكرة (${_brainStorage.formattedSize}) إلى: ${outFile.path}');
+    } catch (e) {
+      _showSnack('تعذر تنزيل brain.db: $e');
+    } finally {
+      if (mounted) setState(() => _downloadingBrain = false);
+    }
+  }
+
+  Future<void> _browseDirectory(String path) async {
+    setState(() {
+      _browsePath = path;
+      _loading = true;
+    });
+    try {
+      final entries = await _api.fetchDirectoryEntries(path);
+      if (!mounted) return;
+      setState(() => _repoEntries = entries);
+    } catch (e) {
+      _showSnack('تعذر فتح المجلد: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _openRepoFileDialog(RepoEntry entry) async {
+    try {
+      final content = await _api.fetchFileTextByPath(entry.path);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(entry.name),
+          content: SizedBox(
+            width: 640,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                content,
+                textDirection: TextDirection.ltr,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12.5),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: content));
+                _showSnack('تم نسخ محتوى الملف.');
+              },
+              icon: const Icon(Icons.copy, size: 18),
+              label: const Text('نسخ'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      _showSnack('تعذر قراءة الملف: $e');
     }
   }
 
@@ -305,9 +414,70 @@ class _DashboardShellState extends State<DashboardShell> {
           s.category.toLowerCase().contains(q);
     }).toList();
 
+    final filteredQueue = _queue.where((item) {
+      if (_searchQuery.trim().isEmpty) return true;
+      final q = _searchQuery.toLowerCase();
+      return item.slug.toLowerCase().contains(q) ||
+          item.topic.toLowerCase().contains(q) ||
+          item.category.toLowerCase().contains(q);
+    }).toList();
+
+    final filteredEntries = _repoEntries.where((e) {
+      if (_searchQuery.trim().isEmpty) return true;
+      final q = _searchQuery.toLowerCase();
+      return e.name.toLowerCase().contains(q) || e.path.toLowerCase().contains(q);
+    }).toList();
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                const CircleAvatar(
+                  child: Icon(Icons.storage_rounded),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'حجم ذاكرة النموذج السحابية (brain.db)',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'الحجم الحالي: ${_brainStorage.formattedSize} • المهارات: ${_telemetry?.totalSkills ?? _skills.length}',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      if (_telemetry != null && _telemetry!.updatedAt.isNotEmpty)
+                        Text(
+                          'آخر تحديث سحابي: ${_telemetry!.updatedAt.split("T").first}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonalIcon(
+                  onPressed: _downloadingBrain ? null : _downloadBrainDb,
+                  icon: _downloadingBrain
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.download_rounded),
+                  label: const Text('تنزيل'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
         if (_telemetry != null)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
@@ -337,17 +507,41 @@ class _DashboardShellState extends State<DashboardShell> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'ما يتعلمه الآن',
-                  style: Theme.of(context).textTheme.titleMedium,
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'ما يقوم به حالياً (البث السحابي)',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('تحديث تلقائي', style: TextStyle(fontSize: 12)),
+                        Switch(
+                          value: _autoRefresh,
+                          onChanged: _toggleAutoRefresh,
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 6),
                 if (activeRuns.isEmpty && activeQueue.isEmpty) ...[
                   Text(
                     nextPending.isNotEmpty
-                        ? 'لا توجد دورة نشطة حالياً — التالي في الطابور: ${nextPending.first.slug}'
-                        : 'لا توجد دورة تعلم نشطة حالياً.',
+                        ? 'الوكيل السحابي في وضع الاستعداد — المهمة التالية: ${nextPending.first.slug}'
+                        : 'الوكيل السحابي في وضع الاستعداد ولا توجد مهام معلقة.',
                   ),
+                  if (_runs.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'آخر تنفيذ: ${_runs.first.name} (${_runs.first.conclusion}) • ${_runs.first.createdAt}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
                   const SizedBox(height: 10),
                   FilledButton.icon(
                     onPressed: _loading ? null : _triggerLearn,
@@ -360,8 +554,12 @@ class _DashboardShellState extends State<DashboardShell> {
                     dense: true,
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.autorenew),
-                    title: Text(r.name),
-                    subtitle: Text('${r.status} • ${r.createdAt}'),
+                    title: Text('${r.name} (${r.status})'),
+                    subtitle: Text(
+                      r.currentStep != null
+                          ? 'الخطوة الحالية: ${r.currentStep}'
+                          : 'قيد التنفيذ على GitHub Actions • ${r.createdAt}',
+                    ),
                   ),
                 ),
                 ...activeQueue.map(
@@ -378,19 +576,27 @@ class _DashboardShellState extends State<DashboardShell> {
           ),
         ),
         const SizedBox(height: 16),
-        Text('ما تم تعلمه — المهارات المتقنة (${filteredSkills.length}/${_skills.length})',
-            style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
         TextField(
           onChanged: (v) => setState(() => _searchQuery = v),
           decoration: const InputDecoration(
             prefixIcon: Icon(Icons.search),
-            hintText: 'ابحث في المهارات المتعلمة أو التصنيفات...',
+            hintText: 'ابحث في المهارات، الطابور، والملفات المحفوظة...',
             isDense: true,
             border: OutlineInputBorder(),
           ),
         ),
+        const SizedBox(height: 16),
+        Text('ما تم تعلمه — المهارات المتقنة (${filteredSkills.length}/${_skills.length})',
+            style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
+        if (filteredSkills.isEmpty)
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.info_outline),
+              title: Text('لا توجد مهارات محفوظة مطابقة بعد'),
+              subtitle: Text('اضغط "تشغيل التعلم الآن" ليتعلم الوكيل أول مهارة ويحفظها هنا.'),
+            ),
+          ),
         ...filteredSkills.map(
           (s) => Card(
             child: ListTile(
@@ -402,9 +608,58 @@ class _DashboardShellState extends State<DashboardShell> {
           ),
         ),
         const SizedBox(height: 20),
-        Text('الموجود في طابور التعلم (${_queue.length})', style: Theme.of(context).textTheme.titleMedium),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'تصفح الملفات المحفوظة ($_browsePath)',
+                style: Theme.of(context).textTheme.titleMedium,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            TextButton(
+              onPressed: () => _browseDirectory('workspace_outputs'),
+              child: const Text('المخرجات'),
+            ),
+            TextButton(
+              onPressed: () => _browseDirectory('memory'),
+              child: const Text('الذاكرة'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        if (filteredEntries.isEmpty)
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.folder_open),
+              title: Text('هذا المجلد فارغ حالياً'),
+            ),
+          ),
+        ...filteredEntries.map(
+          (entry) => Card(
+            child: ListTile(
+              leading: Icon(entry.type == 'dir' ? Icons.folder : Icons.description_outlined),
+              title: Text(entry.name),
+              subtitle: Text(
+                entry.type == 'dir'
+                    ? 'مجلد • اضغط للتصفح'
+                    : '${(entry.size / 1024).toStringAsFixed(1)} KB',
+              ),
+              onTap: () {
+                if (entry.type == 'dir') {
+                  _browseDirectory(entry.path);
+                } else {
+                  _openRepoFileDialog(entry);
+                }
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Text('الموجود في طابور التعلم (${filteredQueue.length}/${_queue.length})',
+            style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
-        ..._queue.map(
+        ...filteredQueue.map(
           (q) => Card(
             child: ListTile(
               leading: Icon(

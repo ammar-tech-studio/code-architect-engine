@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 class SkillSummary {
@@ -45,19 +46,82 @@ class QueueItem {
 }
 
 class WorkflowRunSummary {
+  final int id;
   final String name;
   final String status;
   final String conclusion;
   final String createdAt;
   final String htmlUrl;
+  final String? currentStep;
 
   const WorkflowRunSummary({
+    required this.id,
     required this.name,
     required this.status,
     required this.conclusion,
     required this.createdAt,
     required this.htmlUrl,
+    this.currentStep,
   });
+
+  WorkflowRunSummary copyWith({String? currentStep}) {
+    return WorkflowRunSummary(
+      id: id,
+      name: name,
+      status: status,
+      conclusion: conclusion,
+      createdAt: createdAt,
+      htmlUrl: htmlUrl,
+      currentStep: currentStep ?? this.currentStep,
+    );
+  }
+}
+
+class BrainStorageInfo {
+  final int brainDbBytes;
+  final String? downloadUrl;
+  final bool exists;
+
+  const BrainStorageInfo({
+    required this.brainDbBytes,
+    this.downloadUrl,
+    required this.exists,
+  });
+
+  String get formattedSize {
+    if (!exists || brainDbBytes <= 0) return '0 B (لم تُنشأ بعد)';
+    if (brainDbBytes < 1024) return '$brainDbBytes B';
+    if (brainDbBytes < 1024 * 1024) {
+      return '${(brainDbBytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(brainDbBytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+}
+
+class RepoEntry {
+  final String name;
+  final String path;
+  final String type; // 'file' or 'dir'
+  final int size;
+  final String? downloadUrl;
+
+  const RepoEntry({
+    required this.name,
+    required this.path,
+    required this.type,
+    required this.size,
+    this.downloadUrl,
+  });
+
+  factory RepoEntry.fromJson(Map<String, dynamic> json) {
+    return RepoEntry(
+      name: json['name']?.toString() ?? '',
+      path: json['path']?.toString() ?? '',
+      type: json['type']?.toString() ?? 'file',
+      size: (json['size'] as num?)?.toInt() ?? 0,
+      downloadUrl: json['download_url']?.toString(),
+    );
+  }
 }
 
 class PullRequestSummary {
@@ -159,6 +223,92 @@ class GitHubApiClient {
     return _fetchFileText('memory/skills/$slug/SKILL.md');
   }
 
+  Future<String> fetchFileTextByPath(String path) {
+    return _fetchFileText(path);
+  }
+
+  Future<BrainStorageInfo> fetchBrainStorageInfo() async {
+    try {
+      final resp = await _client.get(_repoUri('contents/memory'), headers: _headers);
+      if (resp.statusCode != 200) {
+        return const BrainStorageInfo(brainDbBytes: 0, exists: false);
+      }
+      final list = jsonDecode(resp.body) as List<dynamic>;
+      for (final item in list) {
+        final map = item as Map<String, dynamic>;
+        if (map['name'] == 'brain.db') {
+          return BrainStorageInfo(
+            brainDbBytes: (map['size'] as num?)?.toInt() ?? 0,
+            downloadUrl: map['download_url']?.toString(),
+            exists: true,
+          );
+        }
+      }
+      return const BrainStorageInfo(brainDbBytes: 0, exists: false);
+    } catch (_) {
+      return const BrainStorageInfo(brainDbBytes: 0, exists: false);
+    }
+  }
+
+  Future<Uint8List> downloadFileBytes(String path, {String? directUrl}) async {
+    if (directUrl != null && directUrl.isNotEmpty && token.trim().isEmpty) {
+      final resp = await _client.get(Uri.parse(directUrl));
+      if (resp.statusCode == 200) return resp.bodyBytes;
+    }
+    final resp = await _client.get(
+      _repoUri('contents/$path'),
+      headers: {
+        ..._headers,
+        'Accept': 'application/vnd.github.raw+json',
+      },
+    );
+    if (resp.statusCode != 200) {
+      throw Exception('فشل تنزيل الملف (${resp.statusCode})');
+    }
+    return resp.bodyBytes;
+  }
+
+  Future<List<RepoEntry>> fetchDirectoryEntries(String path) async {
+    try {
+      final cleanPath = path.replaceAll(RegExp(r'^/+|/+$'), '');
+      final resp = await _client.get(_repoUri('contents/$cleanPath'), headers: _headers);
+      if (resp.statusCode != 200) return [];
+      final decoded = jsonDecode(resp.body);
+      if (decoded is! List<dynamic>) return [];
+      final entries = decoded.map((e) => RepoEntry.fromJson(e as Map<String, dynamic>)).toList();
+      entries.sort((a, b) {
+        if (a.type != b.type) return a.type == 'dir' ? -1 : 1;
+        return a.name.compareTo(b.name);
+      });
+      return entries;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<String?> fetchActiveRunCurrentStep(int runId) async {
+    try {
+      final resp = await _client.get(_repoUri('actions/runs/$runId/jobs'), headers: _headers);
+      if (resp.statusCode != 200) return null;
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final jobs = data['jobs'] as List<dynamic>? ?? [];
+      for (final j in jobs) {
+        final job = j as Map<String, dynamic>;
+        final steps = job['steps'] as List<dynamic>? ?? [];
+        for (final s in steps) {
+          final step = s as Map<String, dynamic>;
+          if (step['status'] == 'in_progress') {
+            return step['name']?.toString();
+          }
+        }
+        if (job['status'] == 'in_progress') {
+          return job['name']?.toString();
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   Future<List<WorkflowRunSummary>> fetchWorkflowRuns() async {
     final resp = await _client.get(_repoUri('actions/runs', {'per_page': '10'}), headers: _headers);
     if (resp.statusCode != 200) {
@@ -166,9 +316,10 @@ class GitHubApiClient {
     }
     final data = jsonDecode(resp.body) as Map<String, dynamic>;
     final runs = data['workflow_runs'] as List<dynamic>? ?? [];
-    return runs.map((r) {
+    final summaries = runs.map((r) {
       final map = r as Map<String, dynamic>;
       return WorkflowRunSummary(
+        id: (map['id'] as num?)?.toInt() ?? 0,
         name: map['name']?.toString() ?? 'Workflow',
         status: map['status']?.toString() ?? '',
         conclusion: map['conclusion']?.toString() ?? 'running',
@@ -176,6 +327,16 @@ class GitHubApiClient {
         htmlUrl: map['html_url']?.toString() ?? '',
       );
     }).toList();
+
+    for (var i = 0; i < summaries.length; i++) {
+      if (summaries[i].status == 'in_progress' && summaries[i].id > 0) {
+        final step = await fetchActiveRunCurrentStep(summaries[i].id);
+        if (step != null) {
+          summaries[i] = summaries[i].copyWith(currentStep: step);
+        }
+      }
+    }
+    return summaries;
   }
 
   Future<List<PullRequestSummary>> fetchPullRequests() async {

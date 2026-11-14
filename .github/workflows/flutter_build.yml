@@ -1,0 +1,67 @@
+name: Cloud Flutter Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Build target platform"
+        required: true
+        default: "android"
+        type: choice
+        options:
+          - android
+          - web
+          - windows
+
+jobs:
+  test-and-build:
+    runs-on: ${{ inputs.target == 'windows' && 'windows-latest' || 'ubuntu-latest' }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          cache: true
+
+      - name: Install packages & run tests
+        run: |
+          flutter pub get
+          flutter test
+
+      - name: Build Android APK
+        if: inputs.target == 'android'
+        run: flutter build apk --release
+
+      - name: Upload Android APK
+        if: inputs.target == 'android'
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-architect-android-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Build Web
+        if: inputs.target == 'web'
+        run: flutter build web --release
+
+      - name: Upload Web Bundle
+        if: inputs.target == 'web'
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-architect-web
+          path: build/web
+
+      - name: Build Windows
+        if: inputs.target == 'windows'
+        run: flutter build windows --release
+
+      - name: Upload Windows Bundle
+        if: inputs.target == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-architect-windows
+          path: build/windows/x64/runner/Release
