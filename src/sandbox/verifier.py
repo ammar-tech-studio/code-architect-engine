@@ -27,9 +27,36 @@ def _build_clean_env() -> dict[str, str]:
     return clean
 
 
+def _run_ruff_check(target_path: Path, clean_env: dict[str, str]) -> VerificationResult | None:
+    """Run fast Ruff static analysis for undefined names and fatal bugs when available."""
+    ruff_bin = shutil.which("ruff")
+    if not ruff_bin:
+        return None
+
+    proc = subprocess.run(
+        [ruff_bin, "check", "--select", "E9,F63,F7,F82", "--no-cache", str(target_path)],
+        env=clean_env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if proc.returncode != 0:
+        return VerificationResult(
+            passed=False,
+            stage="ruff_static_check",
+            stdout=proc.stdout,
+            stderr=(proc.stdout + "\n" + proc.stderr).strip(),
+        )
+    return None
+
+
 def _run_script_in_dir(script_path: Path, workdir: Path, timeout_sec: int) -> VerificationResult:
     clean_env = _build_clean_env()
     clean_env["PYTHONPATH"] = str(workdir)
+
+    ruff_res = _run_ruff_check(workdir, clean_env)
+    if ruff_res is not None:
+        return ruff_res
 
     compile_proc = subprocess.run(
         [sys.executable, "-m", "py_compile", str(script_path)],

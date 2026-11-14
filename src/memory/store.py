@@ -207,6 +207,58 @@ class BrainStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def search_error_fixes(self, error_text: str, limit: int = 3) -> list[dict[str, Any]]:
+        """Retrieve previously verified fixes matching similar error signatures."""
+        tokens = [
+            t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", error_text)
+            if t.lower() not in {"traceback", "most", "recent", "call", "last", "file", "line", "module"}
+        ][:6]
+        if not tokens:
+            return []
+
+        clauses = " OR ".join("error_signature LIKE ?" for _ in tokens)
+        params: list[Any] = [f"%{t}%" for t in tokens]
+        params.append(limit)
+        rows = self.conn.execute(
+            f"""
+            SELECT topic_slug, error_signature, root_cause, verified_fix
+            FROM error_patterns
+            WHERE {clauses}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def export_telemetry_summary(self) -> dict[str, Any]:
+        """Export lightweight JSON telemetry for the Flutter dashboard."""
+        skills_count = self.conn.execute("SELECT COUNT(*) FROM knowledge").fetchone()[0]
+        errors_count = self.conn.execute("SELECT COUNT(*) FROM error_patterns").fetchone()[0]
+        runs_rows = self.conn.execute(
+            """
+            SELECT provider_used, status, COUNT(*) as cnt, AVG(duration_sec) as avg_sec
+            FROM learning_runs
+            GROUP BY provider_used, status
+            ORDER BY cnt DESC
+            """
+        ).fetchall()
+        recent_runs = self.conn.execute(
+            """
+            SELECT topic_slug, status, attempts, provider_used, duration_sec, created_at
+            FROM learning_runs
+            ORDER BY id DESC
+            LIMIT 10
+            """
+        ).fetchall()
+        return {
+            "updated_at": _utc_now(),
+            "total_skills": skills_count,
+            "total_error_fixes": errors_count,
+            "provider_stats": [dict(r) for r in runs_rows],
+            "recent_runs": [dict(r) for r in recent_runs],
+        }
+
     def close_for_git(self, compact: bool = True) -> None:
         """Close SQLite cleanly; compact with DELETE journal + VACUUM when modified."""
         self.conn.commit()

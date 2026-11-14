@@ -109,6 +109,16 @@ def main() -> int:
             print(f"[learn_loop] Sandbox failed on attempt {attempt}: {err_msg[:300]}")
 
             if attempt < MAX_HEAL_ATTEMPTS:
+                prior_fixes = store.search_error_fixes(err_msg, limit=2)
+                fixes_hint = (
+                    "\n\nPreviously verified fixes for similar errors:\n"
+                    + "\n".join(
+                        f"- Cause: {f['root_cause']} -> Fix pattern: {f['verified_fix'][:300]}"
+                        for f in prior_fixes
+                    )
+                    if prior_fixes
+                    else ""
+                )
                 fix_data, fix_resp = router.complete_json(
                     "coding",
                     [
@@ -118,7 +128,7 @@ def main() -> int:
                         },
                         {
                             "role": "user",
-                            "content": f"Broken code:\n```python\n{code}\n```\n\nError output:\n{err_msg}",
+                            "content": f"Broken code:\n```python\n{code}\n```\n\nError output:\n{err_msg}{fixes_hint}",
                         },
                     ],
                     max_tokens=3000,
@@ -207,6 +217,10 @@ def main() -> int:
                 )
 
         save_queue(queue)
+        telemetry = store.export_telemetry_summary()
+        Path("memory/telemetry.json").write_text(
+            json.dumps(telemetry, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
         print(f"[learn_loop] Completed session for {slug}.")
         return 0
     finally:

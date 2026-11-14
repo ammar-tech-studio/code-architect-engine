@@ -64,6 +64,29 @@ def search_github_repos(query: str, max_repos: int = 3) -> list[str]:
         return []
 
 
+def _fetch_with_jina_reader(url: str, max_chars: int = 6000) -> str:
+    """Use free Jina Reader (r.jina.ai) to convert web pages into clean LLM-ready Markdown."""
+    headers = {
+        "User-Agent": "code-architect-engine/1.0 (+research-bot)",
+        "X-Return-Format": "markdown",
+    }
+    jina_key = os.getenv("JINA_API_KEY", "").strip()
+    if jina_key:
+        headers["Authorization"] = f"Bearer {jina_key}"
+    try:
+        resp = httpx.get(
+            f"https://r.jina.ai/{url}",
+            timeout=14.0,
+            follow_redirects=True,
+            headers=headers,
+        )
+        if resp.status_code == 200 and len(resp.text.strip()) > 120:
+            return resp.text.strip()[:max_chars]
+    except Exception:
+        pass
+    return ""
+
+
 async def _fetch_with_crawl4ai(urls: list[str], max_chars_per_page: int = 6000) -> dict[str, str]:
     extracted: dict[str, str] = {}
     try:
@@ -107,7 +130,18 @@ def gather_topic_research(topic: str, max_pages: int = 3) -> ResearchBundle:
     gh_refs = search_github_repos(topic, max_repos=3)
 
     target_urls = [h["url"] for h in search_hits[:max_pages]]
-    crawled = asyncio.run(_fetch_with_crawl4ai(target_urls)) if target_urls else {}
+    crawled: dict[str, str] = {}
+    remaining_urls: list[str] = []
+
+    for u in target_urls:
+        jina_md = _fetch_with_jina_reader(u)
+        if jina_md:
+            crawled[u] = jina_md
+        else:
+            remaining_urls.append(u)
+
+    if remaining_urls:
+        crawled.update(asyncio.run(_fetch_with_crawl4ai(remaining_urls)))
 
     sections: list[str] = []
     if gh_refs:

@@ -66,26 +66,61 @@ def main() -> int:
         for file_spec in plan["files"]:
             _safe_write(project_root, file_spec["path"], file_spec["content"])
 
+        current_files: list[dict[str, str]] = list(plan["files"])
         test_code = plan["verification_script"]
         ver_result = verify_project_bundle(project_root, test_code, timeout_sec=30)
         attempts = 1
         while not ver_result.passed and attempts < 3:
             attempts += 1
+            err_summary = f"[{ver_result.stage}] {ver_result.stderr}".strip()
+            prior_fixes = store.search_error_fixes(err_summary, limit=2)
+            fixes_hint = (
+                "\n\nKnown fixes from memory:\n"
+                + "\n".join(f"- {f['root_cause']}: {f['verified_fix'][:250]}" for f in prior_fixes)
+                if prior_fixes
+                else ""
+            )
+            files_snapshot = "\n\n".join(
+                f"### File: `{f['path']}`\n```python\n{f['content']}\n```" for f in current_files
+            )
             fix, _ = router.complete_json(
                 "coding",
                 [
                     {
                         "role": "system",
-                        "content": 'Fix the verification script or error. Return JSON: {"fixed_code": str}.',
+                        "content": (
+                            "Fix the broken project files and/or verification script so the bundle passes sandbox checks. "
+                            "Return ONLY valid JSON: "
+                            '{"updated_files": [{"path": "relative/path.py", "content": str}], '
+                            '"verification_script": str}'
+                        ),
                     },
                     {
                         "role": "user",
-                        "content": f"Code:\n{test_code}\n\nError ({ver_result.stage}):\n{ver_result.stderr}",
+                        "content": (
+                            f"Project Files:\n{files_snapshot}\n\n"
+                            f"Verification Script (`verify_smoke.py`):\n```python\n{test_code}\n```\n\n"
+                            f"Sandbox Failure ({ver_result.stage}):\n{ver_result.stderr}{fixes_hint}"
+                        ),
                     },
                 ],
-                max_tokens=3000,
+                max_tokens=4096,
             )
-            test_code = fix["fixed_code"]
+            for updated in fix.get("updated_files") or []:
+                if "path" in updated and "content" in updated:
+                    _safe_write(project_root, updated["path"], updated["content"])
+                    for existing in current_files:
+                        if existing["path"] == updated["path"]:
+                            existing["content"] = updated["content"]
+                            break
+                    else:
+                        current_files.append({"path": updated["path"], "content": updated["content"]})
+
+            if fix.get("verification_script"):
+                test_code = fix["verification_script"]
+            elif fix.get("fixed_code"):
+                test_code = fix["fixed_code"]
+
             ver_result = verify_project_bundle(project_root, test_code, timeout_sec=30)
 
         _safe_write(project_root, "verify_smoke.py", test_code)
