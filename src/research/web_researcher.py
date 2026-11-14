@@ -23,21 +23,42 @@ class ResearchBundle:
 
 
 def search_web_ddg(query: str, max_results: int = 5) -> list[dict[str, str]]:
-    """Free DuckDuckGo search with polite jitter to avoid rate limits."""
-    time.sleep(random.uniform(0.8, 1.8))
+    """Free DuckDuckGo search with polite jitter and graceful fallback on rate limits."""
+    time.sleep(random.uniform(0.8, 1.5))
     results: list[dict[str, str]] = []
-    with DDGS() as ddgs:
-        for item in ddgs.text(query, max_results=max_results):
-            url = item.get("href") or item.get("url")
-            if url:
-                results.append(
-                    {
-                        "title": item.get("title", ""),
-                        "url": url,
-                        "snippet": item.get("body", ""),
-                    }
-                )
+    try:
+        with DDGS() as ddgs:
+            for item in ddgs.text(query, max_results=max_results):
+                url = item.get("href") or item.get("url")
+                if url:
+                    results.append(
+                        {
+                            "title": item.get("title", ""),
+                            "url": url,
+                            "snippet": item.get("body", ""),
+                        }
+                    )
+    except Exception:
+        pass
     return results
+
+
+def search_web_jina(query: str, max_chars: int = 5000) -> str:
+    """Free Jina Search fallback (s.jina.ai) when DuckDuckGo rate-limits CI runners."""
+    try:
+        from urllib.parse import quote
+
+        resp = httpx.get(
+            f"https://s.jina.ai/{quote(query)}",
+            timeout=15.0,
+            follow_redirects=True,
+            headers={"User-Agent": "code-architect-engine/1.0 (+research-bot)"},
+        )
+        if resp.status_code == 200 and len(resp.text.strip()) > 100:
+            return resp.text.strip()[:max_chars]
+    except Exception:
+        pass
+    return ""
 
 
 def search_github_repos(query: str, max_repos: int = 3) -> list[str]:
@@ -126,7 +147,11 @@ def _fetch_fallback_httpx(url: str, max_chars: int = 6000) -> str:
 
 
 def gather_topic_research(topic: str, max_pages: int = 3) -> ResearchBundle:
-    search_hits = search_web_ddg(f"{topic} official documentation python example", max_results=5)
+    search_hits = search_web_ddg(f"{topic} python example", max_results=5)
+    if not search_hits:
+        short_query = " ".join(topic.split()[:5])
+        search_hits = search_web_ddg(short_query, max_results=5)
+
     gh_refs = search_github_repos(topic, max_repos=3)
 
     target_urls = [h["url"] for h in search_hits[:max_pages]]
@@ -155,6 +180,17 @@ def gather_topic_research(topic: str, max_pages: int = 3) -> ResearchBundle:
         text = body or hit["snippet"]
         if text:
             sections.append(f"## Source: {hit['title']}\nURL: {u}\n\n{text}")
+
+    if not search_hits:
+        jina_search_md = search_web_jina(f"{topic} python documentation")
+        if jina_search_md:
+            sections.append(f"## Jina Web Search\n{jina_search_md}")
+
+    if not sections:
+        sections.append(
+            "No external web snippets were returned. Rely on verified Python 3.11+ standard practices "
+            "and strict sandbox assert verification."
+        )
 
     return ResearchBundle(
         urls=[h["url"] for h in search_hits],
