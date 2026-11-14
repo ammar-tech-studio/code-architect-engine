@@ -194,5 +194,5 @@ def gather_topic_research(topic: str, max_pages: int = 3) -> ResearchBundle:
 
     return ResearchBundle(
         urls=[h["url"] for h in search_hits],
-        combined_markdown="\n\n---\n\n".join(sections)[:24000],
+        combined_markdown="\n\n---\n\n".join(sections)[:10000],
     )

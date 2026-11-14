@@ -28,24 +28,24 @@ providers:
 routes:
   reasoning:
     - { provider: "gemini", model: "gemini-2.5-flash", timeout: 75 }
+    - { provider: "gemini", model: "gemini-2.0-flash", timeout: 75 }
     - { provider: "groq", model: "llama-3.3-70b-versatile", timeout: 60 }
-    - { provider: "openrouter", model: "deepseek/deepseek-r1:free", timeout: 90 }
-    - { provider: "openrouter", model: "meta-llama/llama-3.3-70b-instruct:free", timeout: 90 }
     - { provider: "openrouter", model: "openrouter/free", timeout: 90 }
     - { provider: "cerebras", model: "gpt-oss-120b", timeout: 60 }
 
   coding:
     - { provider: "gemini", model: "gemini-2.5-flash", timeout: 75 }
+    - { provider: "gemini", model: "gemini-2.0-flash", timeout: 75 }
     - { provider: "groq", model: "llama-3.3-70b-versatile", timeout: 60 }
-    - { provider: "openrouter", model: "qwen/qwen3-coder:free", timeout: 90 }
-    - { provider: "openrouter", model: "meta-llama/llama-3.3-70b-instruct:free", timeout: 90 }
+    - { provider: "groq", model: "llama-3.1-8b-instant", timeout: 60 }
     - { provider: "openrouter", model: "openrouter/free", timeout: 90 }
     - { provider: "mistral", model: "codestral-latest", timeout: 60 }
 
   summarization:
     - { provider: "gemini", model: "gemini-2.5-flash", timeout: 90 }
+    - { provider: "gemini", model: "gemini-2.0-flash", timeout: 90 }
+    - { provider: "groq", model: "llama-3.1-8b-instant", timeout: 60 }
     - { provider: "groq", model: "llama-3.3-70b-versatile", timeout: 60 }
-    - { provider: "openrouter", model: "meta-llama/llama-3.3-70b-instruct:free", timeout: 90 }
     - { provider: "openrouter", model: "openrouter/free", timeout: 90 }
 
   fast_json:

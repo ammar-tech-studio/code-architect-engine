@@ -130,14 +130,21 @@ class ModelRouter:
 
             except AuthenticationError as exc:
                 self._disabled_providers.add(provider)
-                errors.append(f"{provider}/{model}: auth error ({exc})")
+                msg = f"{provider}/{model}: auth error ({exc})"
+                print(f"[router] {msg}")
+                errors.append(msg)
             except RateLimitError as exc:
-                self._disabled_models.add((provider, model))
-                errors.append(f"{provider}/{model}: rate limit 429 ({exc})")
-                time.sleep(1.0)
+                msg = f"{provider}/{model}: rate limit 429 ({exc})"
+                print(f"[router] {msg}")
+                errors.append(msg)
+                time.sleep(1.5)
             except (APITimeoutError, APIConnectionError, APIError, ValueError) as exc:
-                self._disabled_models.add((provider, model))
-                errors.append(f"{provider}/{model}: {type(exc).__name__} ({exc})")
+                err_str = str(exc)
+                if "404" in err_str or "NotFoundError" in type(exc).__name__:
+                    self._disabled_models.add((provider, model))
+                msg = f"{provider}/{model}: {type(exc).__name__} ({exc})"
+                print(f"[router] {msg}")
+                errors.append(msg)
                 time.sleep(0.5)
 
         raise RuntimeError(
