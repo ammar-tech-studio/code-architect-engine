@@ -9,7 +9,7 @@
       "priority": 1,
       "depth": 0,
       "attempts": 0,
-      "status": "pending",
+      "status": "completed",
       "parent_slug": null
     },
     {
@@ -31,6 +31,16 @@
       "attempts": 0,
       "status": "pending",
       "parent_slug": null
+    },
+    {
+      "slug": "asyncio-deadline-propagation-cancellation-safe-cleanup",
+      "topic": "Deadline propagation and cancellation-safe cleanup across nested asyncio.TaskGroup and asyncio.timeout scopes: budget-aware timeouts, shielding vs. uncancellable critical sections, async context manager/__aexit__ cleanup ordering under CancelledError, and preventing orphaned tasks and leaked resources during graceful shutdown",
+      "category": "concurrency",
+      "priority": 2,
+      "depth": 1,
+      "attempts": 0,
+      "status": "pending",
+      "parent_slug": "python-async-taskgroup-patterns"
     }
   ]
 }

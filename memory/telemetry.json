@@ -1,0 +1,23 @@
+{
+  "updated_at": "2026-11-16T20:43:15.712004+00:00",
+  "total_skills": 1,
+  "total_error_fixes": 1,
+  "provider_stats": [
+    {
+      "provider_used": "openrouter/openrouter/free",
+      "status": "completed",
+      "cnt": 1,
+      "avg_sec": 84.5
+    }
+  ],
+  "recent_runs": [
+    {
+      "topic_slug": "python-async-taskgroup-patterns",
+      "status": "completed",
+      "attempts": 2,
+      "provider_used": "openrouter/openrouter/free",
+      "duration_sec": 84.5,
+      "created_at": "2026-11-16T20:43:06.968661+00:00"
+    }
+  ]
+}
